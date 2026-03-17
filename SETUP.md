@@ -28,6 +28,265 @@
 
 ---
 
+## Phase 0: EdgeRouter SFP Network Setup
+
+### 0.1 Network Topology
+
+```
+┌──────────────────┐
+│  Home Network    │
+│  192.168.1.0/24  │
+│  (Your Laptop)   │
+└────────┬─────────┘
+         │ WAN
+         ▼
+    ┌────────────┐
+    │ GLI-Net    │
+    │ Mini       │
+    │ Router     │
+    └────┬───────┘
+         │ Uplink
+         ▼
+    ┌─────────────────────────────────────────┐
+    │ EdgeRouter SFP (192.168.50.1)           │
+    │ Lab Network: 192.168.50.0/24            │
+    ├─────────────────────────────────────────┤
+    │ ├─ Mac Mini #1 (192.168.50.10)         │
+    │ │  Burp MCP Server (port 5000)         │
+    │ │                                       │
+    │ ├─ Mac Mini #2 (192.168.50.11)         │
+    │ │  Ollama Server (port 11434)          │
+    │ │                                       │
+    │ └─ Synology NAS (192.168.50.50)        │
+    │    Findings Storage (SMB 445)          │
+    └─────────────────────────────────────────┘
+```
+
+### 0.2 EdgeRouter Configuration
+
+**Assumptions:**
+- EdgeRouter WAN port = GLI-Net uplink
+- EdgeRouter LAN ports = Lab devices
+- EdgeRouter IP = 192.168.50.1 (gateway)
+- Static IPs configured on all devices
+
+#### 0.2.1 SSH into EdgeRouter
+
+```bash
+ssh admin@192.168.50.1
+```
+
+#### 0.2.2 Configure LAN Interface
+
+```bash
+configure
+
+# Set LAN interface (eth1 or eth2, adjust based on your setup)
+set interfaces ethernet eth1 address 192.168.50.1/24
+set interfaces ethernet eth1 description "Lab-LAN"
+
+commit
+save
+```
+
+#### 0.2.3 Configure DHCP (optional, if you want to use DHCP for some devices)
+
+```bash
+configure
+
+set service dhcp-server shared-network-name lab subnet 192.168.50.0/24 default-router 192.168.50.1
+set service dhcp-server shared-network-name lab subnet 192.168.50.0/24 dns-server 192.168.50.1
+set service dhcp-server shared-network-name lab subnet 192.168.50.0/24 lease 86400
+set service dhcp-server shared-network-name lab subnet 192.168.50.0/24 start 192.168.50.100 stop 192.168.50.200
+
+commit
+save
+```
+
+#### 0.2.4 Static IP Assignments (for Mac Minis and NAS)
+
+On each device, set static IP:
+
+**Mac Mini #1:**
+```bash
+# macOS: System Preferences → Network → WiFi/Ethernet → Advanced → TCP/IP
+# IPv4 Address: 192.168.50.10
+# Subnet Mask: 255.255.255.0
+# Router: 192.168.50.1
+# DNS Server: 192.168.50.1 (or 8.8.8.8 if you allow internet DNS)
+```
+
+**Mac Mini #2:**
+```bash
+# IPv4 Address: 192.168.50.11
+# Subnet Mask: 255.255.255.0
+# Router: 192.168.50.1
+# DNS Server: 192.168.50.1
+```
+
+**Synology NAS:**
+```bash
+# Control Panel → Network → Network Interface → Edit
+# IPv4 Address: 192.168.50.50
+# Subnet Mask: 255.255.255.0
+# Gateway: 192.168.50.1
+# DNS Server: 192.168.50.1
+```
+
+### 0.3 Firewall Rules
+
+**Objective:**
+- Allow home network (192.168.1.0/24) ↔ lab network (192.168.50.0/24)
+- Block lab network → internet
+- Allow Mac Minis → NAS
+- Block home network → NAS
+
+#### 0.3.1 Create Firewall Rulesets
+
+```bash
+configure
+
+# Inbound firewall (WAN to LAN traffic)
+set firewall name WAN_TO_LAB rule 10 action accept
+set firewall name WAN_TO_LAB rule 10 description "Allow home network to lab"
+set firewall name WAN_TO_LAB rule 10 source address 192.168.1.0/24
+set firewall name WAN_TO_LAB rule 10 destination address 192.168.50.0/24
+
+set firewall name WAN_TO_LAB rule 20 action drop
+set firewall name WAN_TO_LAB rule 20 description "Drop all other WAN traffic"
+
+# Outbound firewall (LAN to WAN traffic)
+set firewall name LAB_TO_WAN rule 10 action accept
+set firewall name LAB_TO_WAN rule 10 description "Allow lab to home network"
+set firewall name LAB_TO_WAN rule 10 source address 192.168.50.0/24
+set firewall name LAB_TO_WAN rule 10 destination address 192.168.1.0/24
+
+set firewall name LAB_TO_WAN rule 20 action drop
+set firewall name LAB_TO_WAN rule 20 description "Block all other outbound"
+
+# NAS protection (block home network access to NAS)
+set firewall name WAN_TO_LAB rule 15 action drop
+set firewall name WAN_TO_LAB rule 15 description "Block home network to NAS"
+set firewall name WAN_TO_LAB rule 15 source address 192.168.1.0/24
+set firewall name WAN_TO_LAB rule 15 destination address 192.168.50.50
+set firewall name WAN_TO_LAB rule 15 destination port 445
+
+commit
+save
+```
+
+#### 0.3.2 Apply Firewall to Interfaces
+
+```bash
+configure
+
+# Apply to WAN interface (incoming from home network)
+set interfaces ethernet eth0 firewall in name WAN_TO_LAB
+
+# Apply to LAN interface (outgoing to internet)
+set interfaces ethernet eth1 firewall out name LAB_TO_WAN
+
+commit
+save
+exit
+```
+
+#### 0.3.3 Verify Rules
+
+```bash
+show firewall name WAN_TO_LAB
+show firewall name LAB_TO_WAN
+show interfaces ethernet eth0
+show interfaces ethernet eth1
+```
+
+### 0.4 DNS Configuration
+
+Configure local DNS resolver to prevent leaks:
+
+```bash
+configure
+
+# Set DNS for lab devices
+set service dns forwarding listen-address 192.168.50.1
+set service dns forwarding cache-size 150
+
+# Optional: Add upstream DNS for internet access (if needed in future)
+# set service dns forwarding nameserver 8.8.8.8
+# set service dns forwarding nameserver 8.8.4.4
+
+commit
+save
+```
+
+### 0.5 Enable Logging
+
+For audit trail:
+
+```bash
+configure
+
+set firewall global-state-policy icmp log
+
+# Log firewall drops
+set firewall name WAN_TO_LAB rule 20 log enable
+set firewall name LAB_TO_WAN rule 20 log enable
+
+commit
+save
+```
+
+### 0.6 Verification Checklist
+
+From your laptop (home network):
+
+```bash
+# Test connectivity to lab devices
+ping 192.168.50.10  # Mac Mini #1
+ping 192.168.50.11  # Mac Mini #2
+ping 192.168.50.1   # EdgeRouter
+
+# Test from Mac Mini #1
+ssh admin@192.168.50.10
+
+# Inside Mac Mini #1:
+ping 192.168.50.11  # Should succeed (Mac Mini #2)
+ping 192.168.50.50  # Should succeed (NAS)
+ping 8.8.8.8        # Should fail (blocked internet)
+```
+
+### 0.7 Troubleshooting
+
+**Lab devices can't reach each other:**
+```bash
+# On EdgeRouter:
+show firewall statistics
+show firewall global-state-policy
+
+# Check routing:
+show ip route
+```
+
+**Home network can't reach lab:**
+```bash
+# Verify firewall rule 10 on WAN_TO_LAB
+show firewall name WAN_TO_LAB
+
+# Check interface bindings:
+show interfaces ethernet eth0 firewall
+```
+
+**NAS still accessible from home network:**
+```bash
+# Verify rule 15 is in place and comes before allow rules
+show firewall name WAN_TO_LAB rule
+
+# Re-apply with lower rule number (10 before other rules):
+set firewall name WAN_TO_LAB rule 5 action drop
+```
+
+---
+
 ## Phase 1: Environment Setup
 
 ### 1.1 Python Environment (Mac Mini #1)
