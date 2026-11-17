@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Burp MCP Analyzer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <button id="btn-switch" class="eng-btn" hidden title="Switch engagement">
+      <span class="swatch" aria-hidden="true"></span><span id="eng-name"></span><span aria-hidden="true">▾</span>
+    </button>
+    <h1 id="title">Engagements</h1>
+    <span id="kind-badge" class="chip" hidden></span>
+    <span id="ro-badge" class="chip warn" hidden>archived · read-only</span>
+    <div id="stats" aria-live="polite"></div>
+    <div class="spacer"></div>
+    <button id="live-chip" class="chip live" hidden title="Open scan controls"></button>
+    <button id="btn-wstg" class="ghost" hidden title="OWASP WSTG v4.2 coverage for this engagement">WSTG coverage</button>
+    <button id="btn-scan" hidden>Scan Burp…</button>
+    <button id="btn-report" hidden>Report…</button>
+    <button id="btn-logs" class="ghost" title="Recent service events and errors">Logs</button>
+    <button id="btn-token" class="ghost" title="Set API token">Token</button>
+  </header>
+
+  <!-- Step 2 after the token: choose (or create) the client engagement -->
+  <section id="view-engagements" hidden>
+    <div class="eng-head">
+      <div>
+        <h2>Choose an engagement</h2>
+        <p class="hint">Each engagement is a separate client workspace with its own findings, captured traffic and scope. Nothing is shared between them.</p>
+      </div>
+      <button id="btn-new-eng">+ New engagement</button>
+    </div>
+    <p class="legal"><b>Authorized use only.</b> Use this only on systems you own or have written permission to test, and keep to each engagement's scope and the program's rules. Output is AI-assisted and can be wrong: verify every finding yourself. See the README for the full notice.</p>
+    <p id="eng-msg" class="hint err" hidden></p>
+    <div id="eng-list" class="cards"></div>
+    <details id="eng-archived-wrap" hidden>
+      <summary>Archived engagements</summary>
+      <div id="eng-archived" class="cards"></div>
+    </details>
+  </section>
+
+  <main id="view-review" hidden>
+    <aside id="sidebar" aria-label="Findings list">
+      <div class="filters">
+        <select id="f-status" aria-label="Status">
+          <option value="candidate">Candidates</option>
+          <option value="confirmed">Confirmed</option>
+          <option value="dismissed">Dismissed</option>
+          <option value="reported">Reported</option>
+          <option value="">All statuses</option>
+        </select>
+        <select id="f-severity" aria-label="Severity">
+          <option value="">Any severity</option>
+          <option>critical</option><option>high</option><option>medium</option><option>low</option><option>info</option>
+        </select>
+        <select id="f-source" aria-label="Source">
+          <option value="">Any source</option>
+          <option value="check">Checks</option>
+          <option value="llm">Model</option>
+        </select>
+        <input id="f-search" type="search" placeholder="Search title or URL" aria-label="Search">
+        <label class="inline"><input id="f-group" type="checkbox" checked> Group similar</label>
+        <button id="wstg-clear" class="chip warn" hidden title="Show all findings again"></button>
+      </div>
+      <ul id="list"></ul>
+      <p class="hint">Keys: <kbd>j</kbd>/<kbd>k</kbd> move · <kbd>c</kbd> confirm · <kbd>d</kbd> dismiss</p>
+    </aside>
+    <section id="detail" aria-live="polite"><p class="empty">Select a finding.</p></section>
+  </main>
+
+  <section id="view-coverage" hidden>
+    <div class="eng-head">
+      <div>
+        <h2>OWASP WSTG v4.2 coverage</h2>
+        <p class="hint">Every test in the Web Security Testing Guide, with what this engagement has so far. <b>Auto-checked</b> means passive analysis of captured traffic found nothing for that test; it does not replace testing it yourself. Mark tests you did by hand, or that don't apply, and add notes.</p>
+      </div>
+      <button id="cov-rebuild" class="ghost" title="Recount automated coverage from all stored requests">Recount</button>
+    </div>
+    <div id="cov-summary" class="chips"></div>
+    <div id="cov-body"></div>
+  </section>
+
+  <dialog id="dlg-eng">
+    <form method="dialog" id="eng-form">
+      <h2 id="eng-title">New engagement</h2>
+      <label>Name <input id="eng-f-name" type="text" maxlength="80" required placeholder="e.g. Acme Corp: external web app"></label>
+      <label>Client <input id="eng-f-client" type="text" maxlength="80" placeholder="Used in the report heading (optional)"></label>
+      <fieldset class="kind">
+        <legend>What kind of work is this?</legend>
+        <label class="inline"><input type="radio" name="eng-kind" value="pentest"> Web app pentest
+          <small class="hint">Client report: scope, summary table, every finding.</small></label>
+        <label class="inline"><input type="radio" name="eng-kind" value="bounty"> Bug bounty
+          <small class="hint">One submission draft per finding, in the shape platforms ask for.</small></label>
+      </fieldset>
+      <label>Scope: hosts you are authorized to test, one per line
+        <textarea id="eng-f-scope" rows="4" placeholder="app.client.com&#10;*.client.com&#10;10.0.0.5:8443"></textarea>
+        <small class="hint">Only traffic from these hosts is ever analyzed. A pasted URL is reduced to its host; a bare <code>*</code> is refused.</small>
+      </label>
+      <label>Notes <textarea id="eng-f-notes" rows="3" maxlength="4000" placeholder="Rules of engagement, test window, contacts…"></textarea></label>
+      <p id="eng-error" class="err" hidden></p>
+      <div class="row">
+        <button type="button" id="eng-save">Save</button>
+        <button value="close" class="ghost">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-delete">
+    <form method="dialog">
+      <h2>Delete engagement</h2>
+      <p>This <b>permanently deletes</b> all findings, notes and captured traffic for <b id="del-name"></b>. It can't be undone. Archiving keeps the data and just locks it.</p>
+      <label>Type the engagement name to confirm <input id="del-input" type="text" autocomplete="off"></label>
+      <p id="del-error" class="err" hidden></p>
+      <div class="row">
+        <button type="button" id="del-go" class="danger" disabled>Delete permanently</button>
+        <button value="close" class="ghost">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-scan">
+    <form method="dialog" id="scan-form">
+      <h2>Scan Burp</h2>
+      <fieldset id="scan-setup">
+        <label class="inline"><input type="radio" name="scan-mode" value="once" checked> Scan once</label>
+        <label class="inline"><input type="radio" name="scan-mode" value="live"> Live: keep watching Burp for new traffic</label>
+        <label id="row-count">Items to pull <input id="scan-count" type="number" min="1" max="5000" value="300"></label>
+        <div id="row-live" hidden>
+          <label>Check Burp every <input id="scan-interval" type="number" min="2" max="3600" value="15"> seconds</label>
+          <label>Wait for <input id="scan-batch" type="number" min="1" max="1000" value="1"> new requests before analyzing
+            <small class="hint">A smaller batch is still processed once traffic goes quiet.</small></label>
+        </div>
+        <label class="inline"><input id="scan-llm" type="checkbox" checked> Model review (slower; runs in the background)</label>
+      </fieldset>
+      <p id="scan-scope" class="hint"></p>
+      <div id="scan-status" class="mono"></div>
+      <div class="row">
+        <button type="button" id="scan-go">Start</button>
+        <button type="button" id="scan-pause" class="ghost" hidden>Pause</button>
+        <button type="button" id="scan-resume" hidden>Resume</button>
+        <button type="button" id="scan-cancel" class="danger" hidden>Stop</button>
+        <button type="button" id="queue-clear" class="ghost" hidden>Clear model queue</button>
+        <button type="button" id="scan-logs" class="ghost">View logs</button>
+        <button value="close" class="ghost">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-report">
+    <form method="dialog">
+      <h2>Report (confirmed findings)</h2>
+      <label class="inline">Format
+        <select id="report-format" aria-label="Report format">
+          <option value="pentest">Web app pentest report</option>
+          <option value="bounty">Bug bounty submission drafts</option>
+        </select>
+      </label>
+      <label class="inline" id="row-cov"><input id="report-cov" type="checkbox"> Include WSTG coverage appendix</label>
+      <pre id="report-text"></pre>
+      <div class="row">
+        <button type="button" id="report-copy">Copy</button>
+        <button type="button" id="report-dl">Download .md</button>
+        <button value="close" class="ghost">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-logs">
+    <form method="dialog">
+      <h2>Service log</h2>
+      <p class="hint">Model errors, pauses, Burp connection failures and job start/finish, newest last. Messages hold the method and path only, never request bodies. <span id="logs-file"></span></p>
+      <label class="inline">Show
+        <select id="logs-level" aria-label="Log level">
+          <option value="WARNING">Warnings and errors</option>
+          <option value="INFO">Everything</option>
+        </select>
+      </label>
+      <div id="logs-text" class="mono" role="log" tabindex="0"></div>
+      <div class="row">
+        <button type="button" id="logs-refresh" class="ghost">Refresh</button>
+        <button type="button" id="logs-copy" class="ghost">Copy</button>
+        <button value="close" class="ghost">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-token">
+    <form method="dialog">
+      <h2>API token</h2>
+      <p>Required when the service has <code>API_TOKEN</code> set. Kept for this tab only.</p>
+      <input id="token-input" type="password" autocomplete="off" placeholder="Token">
+      <div class="row"><button id="token-save" value="save">Save</button><button value="close" class="ghost">Cancel</button></div>
+    </form>
+  </dialog>
+
+  <footer id="legal-footer">Authorized targets only · AI-assisted leads, verify before reporting</footer>
+  <script src="app.js"></script>
+</body>
+</html>
